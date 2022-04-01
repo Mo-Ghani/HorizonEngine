@@ -13,20 +13,27 @@ Ideas:
        should meet in order to be competitive 
 """
 
-verbose = False
-
+verbose = True
+#pd.set_option('display.max_columns', None)
 
 class FieldRange():
-    def __init__(self, bottom, top):
+    def __init__(self, bottom, top=None):
 
-        if isinstance(bottom,str):
-            self.bottom = self.mapClassToPI(bottom)
+        if top is None:
+            self.bottom = self.mapClassToPI(bottom) - 100
+            if self.bottom != 998:
+                self.top = self.bottom + 100
+            else:
+                self.top = 999
         else:
-            self.bottom = bottom
-        if isinstance(top,str):
-            self.top = self.mapClassToPI(top)
-        else:
-            self.top = top
+            if isinstance(bottom,str):
+                self.bottom = self.mapClassToPI(bottom)
+            else:
+                self.bottom = bottom
+            if isinstance(top,str):
+                self.top = self.mapClassToPI(top)
+            else:
+                self.top = top
 
         if isinstance(self.bottom,float) and isinstance(self.top,float):
             if self.top < self.bottom:
@@ -48,7 +55,7 @@ class FieldRange():
         else: return i
 
 class SearchEngine():
-    def __init__(self, data, filters=None):
+    def __init__(self, data, filters=None, reqsearchmode=None):
 
         self.filters = {'car value':'any',
                         'class':'any',
@@ -72,22 +79,52 @@ class SearchEngine():
                         '100-0 distance':'any',
                         '60mph gforce':'any',
                         '100mph gforce':'any'}
+
+        self.rankableFeatures = ['PI','speed','handling','acceleration','launch',
+                                 'braking','offroad','horsepower','torque','weight','0-60',
+                                 '60-100','0-100','1/4 mile','top speed','60-0 distance',
+                                 '100-0 distance','60mph gforce','100mph gforce']
+
+        self.searchModes = {'car value': 'all',
+                            'class': 'all',
+                            'PI': 'all',
+                            'speed': 'all',
+                            'handling': 'all',
+                            'acceleration': 'all',
+                            'launch': 'all',
+                            'braking': 'all',
+                            'offroad': 'all',
+                            'horsepower': 'all',
+                            'torque': 'all',
+                            'weight': 'all',
+                            'power to weight': 'all',
+                            '0-60': 'all',
+                            '60-100': 'all',
+                            '0-100': 'all',
+                            '1/4 mile': 'all',
+                            'top speed': 'all',
+                            '60-0 distance': 'all',
+                            '100-0 distance': 'all',
+                            '60mph gforce': 'all',
+                            '100mph gforce': 'all'}
+
         self.data = data
         self.entries = None
         self.reqfilters = filters
+        self.reqsearchmode = reqsearchmode
+        self.rankedCars = []
 
+        self.processSearchMode()
         self.processFilters()
         self.processSearch()
 
-    def processFilters(self):
-
-        if self.reqfilters is None:
-            self.reqfilters = self.filters
+    def processSearchMode(self):
+        if self.reqsearchmode is None:
             return
 
-        requestedFilteredFields = self.reqfilters.keys()
-        for key in requestedFilteredFields:
-            self.filters[key] = self.parseField(key, self.reqfilters[key])
+        requestedSearchFields = self.reqsearchmode.keys()
+        for key in requestedSearchFields:
+            self.searchModes[key] = self.parseField(key, self.reqfilters[key])
             if self.filters[key] != 'any' and verbose:
                 minval = str(self.filters[key].bottom)
                 maxval = str(self.filters[key].top)
@@ -98,10 +135,33 @@ class SearchEngine():
             elif self.filters['class'] != 'any' and self.filters['PI'] == 'any':
                 self.filters['PI'] = self.filters['class']
 
+    def processFilters(self):
+
+        if self.reqfilters is None:
+            return
+
+        requestedFilteredFields = self.reqfilters.keys()
+        for key in requestedFilteredFields:
+            self.filters[key] = self.parseField(key, self.reqfilters[key], 1)
+            if self.filters[key] != 'any' and verbose:
+                minval = str(self.filters[key].bottom)
+                maxval = str(self.filters[key].top)
+                print('Requested filter: ' + key + ' - understood as: ' +
+                      'cars from ' + minval + ' to ' + maxval)
+            if self.filters['class'] != 'any' and self.filters['PI'] != 'any':
+                self.filters['class'] = 'any'
+            elif self.filters['class'] != 'any' and self.filters['PI'] == 'any':
+                self.filters['PI'] = self.filters['class']
+
+
     def processSearch(self):
 
+        changed = False
         for filt in self.filters.keys():
+            if filt == 'class':
+                continue
             if self.filters[filt] != 'any':
+                changed = True
                 if self.entries is None:
                     if filt == 'car type':
                         self.entries = self.data[self.filters[filt] == self.data[filt]]
@@ -112,30 +172,73 @@ class SearchEngine():
                     if filt == 'car type':
                         self.entries = self.entries[self.filters[filt] == self.entries[filt]]
                         continue
-                    self.entries = self.entries[(self.filters[filt].bottom < self.entries[filt]) &
-                                                (self.filters[filt].top >= self.entries[filt])]
+                    self.entries = self.entries[(self.filters[filt].bottom < float(self.entries[filt])) &
+                                                (self.filters[filt].top >= float(self.entries[filt]))]
+        if not changed:
+            self.entries = self.data
+
+    def rankByPoints(self):
+
+        if len(self.entries) == 0:
+            self.rankedCars = None
+            return
+
+        self.entries = self.entries.reset_index(drop=True)
+        totalScores = np.array([[0, i] for i in range(len(self.entries))])
+
+        for field in self.rankableFeatures:
+            ascending = False
+            if field in ['weight', 'car value']:
+                ascending = True
+            self.entries = self.entries.sort_values([field], ascending=ascending)
+            for i in range(len(self.entries)):
+                totalScores[self.entries.index[i]][0] += len(self.entries) - i
+
+        ranked = totalScores[totalScores[:, 0].argsort()][::-1]
+
+        self.rankedCars = ranked
+
+    def printRanked(self):
+
+        if self.rankedCars is None:
+            print("No Cars passed your cuts.")
+            return
+
+        for c in range(len(self.rankedCars)):
+            print("Position " + str(c+1) + " with " + str(self.rankedCars[c][0]) + " points: " + str(self.entries.loc[
+                self.rankedCars[c][1]]["name"]))
 
     @staticmethod
-    def parseField(key, field):
-        if field == 'any' or key == 'car type':
-            return field
+    def parseField(key, field, mode):
+        if mode == 0:
+            pass
 
-        # split comma delimited string
-        dashindex = -1
-        for c, v in enumerate(field):
-            if v == '-':
-                dashindex = c
-                break
+        else:
+            if field == 'any' or key == 'car type':
+                return field
 
-        if dashindex == -1:
-            if verbose: print('Filter \'' + key + '\' wants a dash delimited range with no spaces, please.')
-            return 'any'
-        try:
-            return FieldRange(float(field[:dashindex]), float(field[dashindex+1:]))
-        except:
-            print('Filter \'' + key + '\' input could not be converted to floating point numbers.' +
-                  ' Check input type, please.')
-            return 'any'
+            # split comma delimited string
+            dashindex = -1
+            for c, v in enumerate(field):
+                if v == '-':
+                    dashindex = c
+                    break
+
+            if key == 'class':
+                if dashindex == -1:
+                    return FieldRange(field)
+                else:
+                    return FieldRange(field[:dashindex], field[dashindex+1:])
+
+            if dashindex == -1:
+                if verbose: print('Filter \'' + key + '\' wants a dash delimited range with no spaces, please.')
+                return 'any'
+            try:
+                return FieldRange(float(field[:dashindex]), float(field[dashindex+1:]))
+            except:
+                print('Filter \'' + key + '\' input could not be converted to floating point numbers.' +
+                      ' Check input type, please.')
+                return 'any'
 
 
 # data from https://www.manteomax.com/
@@ -143,10 +246,11 @@ df = pd.read_csv('data.csv')
 # remove non FH5 cars
 fh5_cars = df.loc[df['Latest game'] == 'FH5']
 
-testfilters = {'PI':'700-400',
-               'car type':'Rally Monsters'}
+testfilters = {'0-60':'0-1'}
 
 test = SearchEngine(fh5_cars, testfilters)
 
 # currently just prints the names of cars that meet criteria specified in testfilters dict
-print(test.entries['name'].tolist())
+test.rankByPoints()
+test.printRanked()
+
